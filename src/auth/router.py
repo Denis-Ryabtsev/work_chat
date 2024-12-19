@@ -1,20 +1,40 @@
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi_users.exceptions import UserAlreadyExists, UserNotExists, InvalidVerifyToken
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.schemas import UserCreate, RegData
-from auth.manager import UserManager
-from auth.models import User
-from auth.base_config import fastapi_users
+from auth.schemas import UserCreate, RegData, LoginData
+from auth.manager import UserManager, get_user_manager
+from auth.models import User, LocalAccount
+from auth.base_config import (
+                                fastapi_users,
+                                auth_refresh_backend,
+                                auth_access_backend,
+                                cookie_transport
+                            )
 from database import get_session
 
 reg_router = APIRouter(
-    prefix=f"/local_acc",
+    prefix=f"/registration",
     tags=[f'Registration']
 )
 
-@reg_router.post(f"/registration", response_model=Optional[str])
+auth_router = APIRouter(
+    prefix=f"/auth",
+    tags=[f'Authentification']
+)
+
+logout_router = APIRouter(
+    tags=[f"Authentification"]
+)
+
+test_router = APIRouter(
+    tags=[f"Test"]
+)
+
+
+@reg_router.post(f"/local_acc", response_model=Optional[str])
 async def local_account_registration(
     data: RegData,
     user_manager: UserManager = Depends(fastapi_users.get_user_manager),
@@ -49,3 +69,106 @@ async def local_account_registration(
             status_code=499,
             detail=str(error)
         )
+
+
+@auth_router.post(f'/login', response_model=Optional[dict])
+async def login_user(
+    response: Response,
+    data: LoginData,
+    user_manager = Depends(get_user_manager) 
+) -> Union[dict, HTTPException]:
+    
+    try:
+        user = await user_manager.get_by_email(data.email)
+        verify_pass, _ = user_manager.password_helper.verify_and_update(
+            data.password, 
+            user.hashed_password
+        )
+        if not verify_pass: 
+            raise
+    except UserNotExists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"This email not found"
+        )
+    except:
+        raise HTTPException(
+            status_code=474,
+            detail=f"Email or password is invalid"
+        )
+
+    access_token = await auth_access_backend.get_strategy().write_token(user)
+    refresh_token = await auth_refresh_backend.get_strategy().write_token(user)
+
+    response.set_cookie(
+        key=cookie_transport.cookie_name,
+        value=refresh_token,
+        max_age=cookie_transport.cookie_max_age
+    )
+
+    return {f'access_token': access_token, f'token_type': f'bearer'}
+
+
+@test_router.get(f"/check_access_token", response_model=dict)
+async def check_access_token(
+    user: LocalAccount = Depends(fastapi_users.current_user())
+) -> dict:
+    """
+    Проверяет валидность access токена.
+    Если токен валиден, возвращает данные пользователя.
+    Если токен истёк или недействителен, возвращает ошибку 401.
+    """
+    return {
+        "message": "Access token is valid",
+        "user_id": user.id,
+        "email": user.email,
+    }
+
+@auth_router.post(f"/refresh_token", response_model=dict)
+async def refresh_access_token(
+    request: Request,
+    user_manager: UserManager = Depends(fastapi_users.get_user_manager)
+) -> Union[dict, HTTPException]:
+
+    refresh_token = request.cookies.get(cookie_transport.cookie_name)
+    if not refresh_token:
+        raise HTTPException(
+            status_code=491,
+            detail=f"Refresh token is apsent"
+        )
+    
+    try:
+        refresh_user = await auth_refresh_backend.get_strategy().read_token(refresh_token, user_manager)
+        if not refresh_user:
+            raise InvalidVerifyToken()
+        
+        access_token = await auth_access_backend.get_strategy().write_token(refresh_user)
+        return {f"access_token": access_token, f"token_type": f"bearer"}
+    except InvalidVerifyToken:
+        raise HTTPException(
+            status_code=492,
+            detail=f"Refresh token is inactive"
+        )
+    
+@logout_router.post(f"/logout", response_model=str)
+async def logout_user(
+    response: Response
+) -> str:
+    
+    try:
+        response.delete_cookie(cookie_transport.cookie_name)
+        return f"Logout was successfull"
+    except Exception as e:
+        raise HTTPException(
+            status_code=501,
+            detail=str(e)
+        )
+
+
+
+
+
+
+
+
+
