@@ -1,5 +1,4 @@
-from typing import AsyncGenerator
-from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Union
 
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.asyncio import (
@@ -7,6 +6,7 @@ from sqlalchemy.ext.asyncio import (
                                     create_async_engine,
                                     AsyncSession
                                 )
+from redis.asyncio import Redis
 
 from config import setting
 
@@ -26,3 +26,22 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 
 class Base(DeclarativeBase):
     pass
+
+
+async def get_redis_client() -> Union[Redis, Exception]:
+    client = Redis(
+        host=setting.REDIS_HOST, 
+        port=setting.REDIS_PORT, 
+        decode_responses=True
+    )
+    try:
+        await client.ping()
+        return client
+    except Exception as error:
+        raise RuntimeError(
+            f"Failed to connect to Redis: {str(error)}"
+        )
+
+async def check_token_blacklist(token: str, redis: Redis) -> bool:
+    return await redis.exists(f"blacklist:{token}") > 0
+
