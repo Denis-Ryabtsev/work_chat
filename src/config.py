@@ -21,6 +21,7 @@ class Setting(BaseSettings):
     SMTP_PASS: str
 
     REDIS_HOST: str
+    REDIS_PORT: int
 
     @property
     def DB_URL(self):
