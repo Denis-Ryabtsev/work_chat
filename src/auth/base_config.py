@@ -1,10 +1,11 @@
 from fastapi_users.authentication import (AuthenticationBackend,\
                                           JWTStrategy,\
                                           CookieTransport,
-                                          BearerTransport    
+                                          BearerTransport
                                         )
 
 from fastapi_users import FastAPIUsers
+from httpx_oauth.clients.github import GitHubOAuth2
 
 from config import setting
 from auth.models import LocalAccount
@@ -50,3 +51,30 @@ fastapi_users = FastAPIUsers[LocalAccount, int](
     get_user_manager=get_user_manager,
     auth_backends=[auth_access_backend, auth_refresh_backend]
 )
+
+#   google cloud
+
+# oauth_client = GoogleOAuth2(
+#     client_id=setting.CLIENT_ID,
+#     client_secret=setting.CLIENT_SECRET,
+#     scopes=[
+#         f"https://www.googleapis.com/auth/userinfo.profile", 
+#         f"https://www.googleapis.com/auth/userinfo.email",
+#         f"openid"
+#     ]
+#     # scopes=[
+#     #     f"openid", 
+#     #     f"email", 
+#     #     f"profile"
+#     # ]
+# )
+
+github_client = GitHubOAuth2(
+    client_id=setting.GITHUB_CLIENT_ID,
+    client_secret=setting.GITHUB_CLIENT_SECRET,
+    scopes=[
+        f"read:user",
+        f"user:email"
+    ]
+)
+

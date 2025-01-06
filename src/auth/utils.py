@@ -5,7 +5,7 @@ from fastapi_users.db import SQLAlchemyUserDatabase
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_session
-from auth.models import LocalAccount
+from auth.models import LocalAccount, OAuthAccount
 
 
 async def get_user_db(

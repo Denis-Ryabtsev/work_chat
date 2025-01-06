@@ -4,6 +4,7 @@ from typing import Optional, Union
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists, InvalidVerifyToken
+from fastapi_users.router import get_oauth_router
 from redis import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +15,8 @@ from auth.base_config import (
                                 fastapi_users,
                                 auth_refresh_backend,
                                 auth_access_backend,
-                                cookie_transport
+                                cookie_transport,
+                                github_client
                             )
 from database import get_session, get_redis_client, check_token_blacklist
 from config import setting
@@ -26,6 +28,11 @@ reg_router = APIRouter(
 )
 
 auth_router = APIRouter(
+    prefix=f"/auth",
+    tags=[f'Authentification']
+)
+
+oauth_router = APIRouter(
     prefix=f"/auth",
     tags=[f'Authentification']
 )
@@ -193,14 +200,3 @@ async def logout_user(
             status_code=501,
             detail=str(e)
         )
-
-
-
-
-
-
-
-
-
-
-

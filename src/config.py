@@ -12,8 +12,8 @@ class Setting(BaseSettings):
     DB_PASS: str
     DB_USER: str
 
-    CLIENT_ID: str
-    CLIENT_SECRET: str
+    GITHUB_CLIENT_ID: str
+    GITHUB_CLIENT_SECRET: str
 
     SECRET_AUTH: str
 
