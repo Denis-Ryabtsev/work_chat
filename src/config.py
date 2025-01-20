@@ -14,6 +14,10 @@ class Setting(BaseSettings):
 
     GITHUB_CLIENT_ID: str
     GITHUB_CLIENT_SECRET: str
+    GITHUB_REDIRECT_URI: str
+    GITHUB_AUTH_URL: str
+    GITHUB_TOKEN_URL: str
+    GITHUB_API_URL: str
 
     SECRET_AUTH: str
 
