@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel
 from fastapi_users import schemas
 
@@ -27,3 +28,11 @@ class LoginData(BaseModel):
 
     email: str
     password: str
+
+
+class UserGithub(BaseModel):
+    id: int
+    login: str
+    name: Optional[str]
+    token: str
+    avatar_url: Optional[str]
