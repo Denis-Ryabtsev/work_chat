@@ -1,24 +1,44 @@
 from datetime import datetime
 from typing import Optional, Union
 
+from asyncpg.exceptions import UniqueViolationError
+import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi_users.exceptions import UserAlreadyExists, UserNotExists, InvalidVerifyToken
-from fastapi_users.router import get_oauth_router
-from redis import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    Request, 
+    Response
+)
 
-from auth.schemas import UserCreate, RegData, LoginData
+from fastapi_users.exceptions import (
+    UserNotExists, 
+    UserAlreadyExists,
+    InvalidVerifyToken, 
+    InvalidPasswordException
+)
+from redis import Redis
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+
+from auth.schemas import (
+    UserCreate, 
+    RegData, 
+    LoginData, 
+    UserGithub
+)
 from auth.manager import UserManager, get_user_manager
-from auth.models import User, LocalAccount
+from auth.models import User, GithubAccount, LocalAccount
 from auth.base_config import (
-                                fastapi_users,
-                                auth_refresh_backend,
-                                auth_access_backend,
-                                cookie_transport,
-                                github_client
-                            )
-from database import get_session, get_redis_client, check_token_blacklist
+    fastapi_users,
+    auth_refresh_backend,
+    auth_access_backend,
+    cookie_transport,
+    oauth2_scheme
+)
+from database import get_session, get_redis_client
 from config import setting
 
 
@@ -34,19 +54,15 @@ auth_router = APIRouter(
 
 oauth_router = APIRouter(
     prefix=f"/auth",
-    tags=[f'Authentification']
+    tags=[f'Oauthentification']
 )
 
 logout_router = APIRouter(
     tags=[f"Authentification"]
 )
 
-test_router = APIRouter(
-    tags=[f"Test"]
-)
 
-
-@reg_router.post(f"/local_acc", response_model=Optional[str])
+@reg_router.post(f"/local_account", response_model=Optional[str])
 async def local_account_registration(
     data: RegData,
     user_manager: UserManager = Depends(fastapi_users.get_user_manager),
@@ -76,10 +92,16 @@ async def local_account_registration(
         await session.commit()
         
         return f"Registration was successful"
-    except Exception as error:
+    
+    except UserAlreadyExists:
         raise HTTPException(
             status_code=499,
-            detail=str(error)
+            detail=f"Input email is already exsists"
+        )
+    except IntegrityError:
+        raise HTTPException(
+            status_code=499,
+            detail=f"Input username is already exists"
         )
 
 
@@ -96,60 +118,32 @@ async def login_user(
             data.password, 
             user.hashed_password
         )
+        
         if not verify_pass: 
-            raise
+            raise InvalidPasswordException 
+        
+        access_token = await auth_access_backend.get_strategy().write_token(user)
+        refresh_token = await auth_refresh_backend.get_strategy().write_token(user)
+
+        response.set_cookie(
+            key=cookie_transport.cookie_name,
+            value=refresh_token,
+            max_age=cookie_transport.cookie_max_age
+        )
+
+        return {f'access_token': access_token, f'token_type': f'Bearer'}
+    
     except UserNotExists:
         raise HTTPException(
             status_code=404,
             detail=f"This email not found"
         )
-    except:
+    except InvalidPasswordException:
         raise HTTPException(
             status_code=474,
             detail=f"Email or password is invalid"
         )
-
-    access_token = await auth_access_backend.get_strategy().write_token(user)
-    refresh_token = await auth_refresh_backend.get_strategy().write_token(user)
-
-    response.set_cookie(
-        key=cookie_transport.cookie_name,
-        value=refresh_token,
-        max_age=cookie_transport.cookie_max_age
-    )
-
-    return {f'access_token': access_token, f'token_type': f'Bearer'}
-
-
-@test_router.get(f"/check_access_token", response_model=dict)
-async def check_access_token(
-    user: LocalAccount = Depends(fastapi_users.current_user())
-) -> dict:
-    """
-    Проверяет валидность access токена.
-    Если токен валиден, возвращает данные пользователя.
-    Если токен истёк или недействителен, возвращает ошибку 401.
-    """
-    return {
-        "message": "Access token is valid",
-        "user_id": user.id,
-        "email": user.email,
-    }
-    # return await f"{check_token_blacklist(f"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyIiwiYXVkIjpbImZhc3RhcGktdXNlcnM6YXV0aCJdLCJleHAiOjE3MzQ5MjQxODN9.w5X1mnVdlxWaADLgecLH2_kfSiynC-vOeWt7rr7dy0E")}"
-
-@test_router.get(f"/check", response_model=bool)
-async def check(
-    request: Request,
-    redis: Redis = Depends(get_redis_client)
-) -> bool:
-    """
-    Проверяет валидность access токена.
-    Если токен валиден, возвращает данные пользователя.
-    Если токен истёк или недействителен, возвращает ошибку 401.
-    """
-    headers = request.headers.get(f"Authorization")
-    token = headers.split(" ")[1]
-    return await check_token_blacklist(token, redis)
+    
 
 @auth_router.post(f"/refresh_token", response_model=Optional[dict])
 async def refresh_access_token(
@@ -167,16 +161,19 @@ async def refresh_access_token(
     try:
         refresh_user = await auth_refresh_backend.get_strategy().read_token(refresh_token, user_manager)
         if not refresh_user:
-            raise InvalidVerifyToken()
+            raise InvalidVerifyToken
         
         access_token = await auth_access_backend.get_strategy().write_token(refresh_user)
+        
         return {f"access_token": access_token, f"token_type": f"Bearer"}
+    
     except InvalidVerifyToken:
         raise HTTPException(
             status_code=492,
             detail=f"Refresh token is inactive"
         )
     
+
 @logout_router.post(f"/logout", response_model=Optional[str])
 async def logout_user(
     response: Response,
@@ -188,15 +185,102 @@ async def logout_user(
         headers = request.headers.get(f"Authorization")
         if headers and headers.startswith(f"Bearer "):
             token = headers.split(" ")[1]
-            payload = jwt.decode(token, key=setting.SECRET_AUTH, algorithms=[f'HS256'], audience=["fastapi-users:auth"])
+            payload = jwt.decode(
+                token, 
+                key=setting.SECRET_AUTH, 
+                algorithms=[f'HS256'], 
+                audience=["fastapi-users:auth"]
+            )
             ttl = payload[f'exp'] - int(datetime.now().timestamp())
             if ttl > 0:
                 await redis_client.setex(f"blacklist:{token}", ttl, f"true")           
+        
         if request.cookies.get(cookie_transport.cookie_name):
             response.delete_cookie(cookie_transport.cookie_name)
+        
         return f"Logout was successfull"
+    
     except Exception as e:
         raise HTTPException(
             status_code=501,
             detail=str(e)
         )
+
+
+@oauth_router.get(f'/login', response_model=str)
+async def login_github() -> str:
+    return (
+        f"{setting.GITHUB_AUTH_URL}?client_id={setting.GITHUB_CLIENT_ID}"\
+        f"&redirect_uri={setting.GITHUB_REDIRECT_URI}&scope=read:user"
+    )
+
+
+@oauth_router.get(f"/callback", response_model=Optional[dict])
+async def callback(
+    code: str,
+    current_user = Depends(fastapi_users.current_user()),
+    session: AsyncSession = Depends(get_session)
+) -> Union[HTTPException, dict]:
+    
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            setting.GITHUB_TOKEN_URL,
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": setting.GITHUB_CLIENT_ID,
+                "client_secret": setting.GITHUB_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": setting.GITHUB_REDIRECT_URI,
+            }
+        )
+
+        if token_response.status_code != 200:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to fetch access token"
+            )
+
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+        
+        if not access_token:
+            raise HTTPException(
+                status_code=400, 
+                detail="No access token returned"
+            )
+
+        user_response = await client.get(
+            setting.GITHUB_API_URL,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+
+        if user_response.status_code != 200:
+            raise HTTPException(
+                status_code=400, 
+                detail="Failed to fetch user info"
+            )
+
+        user_data = user_response.json()
+        account = GithubAccount(
+            login=user_data["login"],
+            account_id=user_data['id'],
+            name=user_data.get("name"),
+            token=access_token,
+            avatar_url=user_data.get("avatar_url")
+        )
+        session.add(account)
+        session.flush()
+        user = session.query(LocalAccount).filter(id=current_user.id).first()
+
+        if user:
+            user.oauth_id = account.id
+            session.commit()
+
+
+        return {"user": user, "access_token": access_token}
+
+
+@oauth_router.get("/protected-route", response_model=dict)
+async def protected_route(token: str = Depends(oauth2_scheme)) -> dict:
+    return {"message": "You have access!", "token": token}
+
